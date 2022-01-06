@@ -133,22 +133,11 @@ impl<T: Subscriber + From<ConnInner>> ServiceTmpl<T> {
     }
 
     #[inline]
-    pub fn send(&self, msg: Message) {
-        self.send_shared(Arc::new(msg));
+    pub fn send(&self, msg: Message) -> HashSet<i32> {
+        self.send_shared(Arc::new(msg))
     }
 
-    pub fn send_shared(&self, msg: Arc<Message>) {
-        let mut lock = self.0.write().unwrap();
-        for s in lock.subscribes.values_mut() {
-            s.send(msg.clone());
-        }
-    }
-
-    pub fn send_video_frame(&self, msg: Message) -> HashSet<i32> {
-        self.send_video_frame_shared(Arc::new(msg))
-    }
-
-    pub fn send_video_frame_shared(&self, msg: Arc<Message>) -> HashSet<i32> {
+    pub fn send_shared(&self, msg: Arc<Message>) -> HashSet<i32> {
         let mut conn_ids = HashSet::new();
         let mut lock = self.0.write().unwrap();
         for s in lock.subscribes.values_mut() {

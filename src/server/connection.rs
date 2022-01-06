@@ -26,7 +26,6 @@ lazy_static::lazy_static! {
 pub struct ConnInner {
     id: i32,
     tx: Option<Sender>,
-    tx_video: Option<Sender>,
 }
 
 pub struct Connection {
@@ -62,18 +61,9 @@ impl Subscriber for ConnInner {
 
     #[inline]
     fn send(&mut self, msg: Arc<Message>) {
-        match &msg.union {
-            Some(message::Union::video_frame(_)) => {
-                self.tx_video.as_mut().map(|tx| {
-                    allow_err!(tx.send((Instant::now(), msg)));
-                });
-            }
-            _ => {
-                self.tx.as_mut().map(|tx| {
-                    allow_err!(tx.send((Instant::now(), msg)));
-                });
-            }
-        }
+        self.tx.as_mut().map(|tx| {
+            allow_err!(tx.send((Instant::now(), msg)));
+        });
     }
 }
 
@@ -99,13 +89,8 @@ impl Connection {
         let (tx_from_cm, mut rx_from_cm) = mpsc::unbounded_channel::<ipc::Data>();
         let (tx_to_cm, rx_to_cm) = mpsc::unbounded_channel::<ipc::Data>();
         let (tx, mut rx) = mpsc::unbounded_channel::<(Instant, Arc<Message>)>();
-        let (tx_video, mut rx_video) = mpsc::unbounded_channel::<(Instant, Arc<Message>)>();
         let mut conn = Self {
-            inner: ConnInner {
-                id,
-                tx: Some(tx),
-                tx_video: Some(tx_video),
-            },
+            inner: ConnInner { id, tx: Some(tx) },
             stream,
             server,
             hash,
@@ -159,8 +144,6 @@ impl Connection {
 
         loop {
             tokio::select! {
-                biased; // video has higher priority
-
                 Some(data) = rx_from_cm.recv() => {
                     match data {
                         ipc::Data::Authorize => {
@@ -253,25 +236,17 @@ impl Connection {
                         conn.timer = time::interval_at(Instant::now() + SEC30, SEC30);
                     }
                 },
-                Some((instant, value)) = rx_video.recv() => {
-                    video_service::notify_video_frame_feched(id, Some(instant.into()));
-                    if let Err(err) = conn.stream.send(&value as &Message).await {
-                        conn.on_close(&err.to_string(), false);
-                        break;
-                    }
-                },
                 Some((instant, value)) = rx.recv() => {
-                    let latency = instant.elapsed().as_millis() as i64;
+                    let _latency = instant.elapsed().as_millis() as i64;
                     let msg: &Message = &value;
-
-                    if latency > 1000 {
-                        match &msg.union {
-                            Some(message::Union::audio_frame(_)) => {
-                                // log::info!("audio frame latency {}", instant.elapsed().as_secs_f32());
-                                continue;
-                            }
-                            _ => {}
+                    match &msg.union {
+                        Some(message::Union::audio_frame(_)) => {
+                            audio_service::notify_audio_frame_recv(id);
                         }
+                        Some(message::Union::video_frame(_)) => {
+                            video_service::notify_video_frame_recv(id);
+                        }
+                        _ => {}
                     }
                     if let Err(err) = conn.stream.send(msg).await {
                         conn.on_close(&err.to_string(), false);
@@ -297,7 +272,8 @@ impl Connection {
             }
         }
 
-        video_service::notify_video_frame_feched(id, None);
+        video_service::notify_video_frame_recv(id);
+        audio_service::notify_audio_frame_recv(id);
         super::video_service::update_test_latency(id, 0);
         super::video_service::update_image_quality(id, None);
         if let Err(err) = conn.try_port_forward_loop(&mut rx_from_cm).await {

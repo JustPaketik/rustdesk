@@ -42,18 +42,17 @@ lazy_static::lazy_static! {
     static ref SWITCH: Arc<Mutex<bool>> = Default::default();
     static ref TEST_LATENCIES: Arc<Mutex<HashMap<i32, i64>>> = Default::default();
     static ref IMAGE_QUALITIES: Arc<Mutex<HashMap<i32, i32>>> = Default::default();
-    static ref FRAME_FETCHED_NOTIFIER: (UnboundedSender<(i32, Option<Instant>)>, Arc<TokioMutex<UnboundedReceiver<(i32, Option<Instant>)>>>) = {
+    static ref FRAME_FETCHED_NOTIFIER: (UnboundedSender<i32>, Arc<TokioMutex<UnboundedReceiver<i32>>>) = {
         let (tx, rx) = unbounded_channel();
         (tx, Arc::new(TokioMutex::new(rx)))
     };
 }
 
-pub fn notify_video_frame_feched(conn_id: i32, frame_tm: Option<Instant>) {
-    FRAME_FETCHED_NOTIFIER.0.send((conn_id, frame_tm)).unwrap()
+pub fn notify_video_frame_recv(conn_id: i32) {
+    FRAME_FETCHED_NOTIFIER.0.send(conn_id).unwrap()
 }
 
 struct VideoFrameController {
-    cur: Instant,
     send_conn_ids: HashSet<i32>,
     rt: Runtime,
 }
@@ -61,7 +60,6 @@ struct VideoFrameController {
 impl VideoFrameController {
     fn new() -> Self {
         Self {
-            cur: Instant::now(),
             send_conn_ids: HashSet::new(),
             rt: Runtime::new().unwrap(),
         }
@@ -71,9 +69,8 @@ impl VideoFrameController {
         self.send_conn_ids.clear();
     }
 
-    fn set_send(&mut self, tm: Instant, conn_ids: HashSet<i32>) {
+    fn set_send(&mut self, conn_ids: HashSet<i32>) {
         if !conn_ids.is_empty() {
-            self.cur = tm;
             self.send_conn_ids = conn_ids;
         }
     }
@@ -85,7 +82,7 @@ impl VideoFrameController {
 
         let send_conn_ids = self.send_conn_ids.clone();
         self.rt.block_on(async move {
-            let mut fetched_conn_ids = HashSet::new();
+            let mut recv_conn_ids = HashSet::new();
             let begin = Instant::now();
             while begin.elapsed().as_millis() < timeout_millis {
                 let timeout_dur =
@@ -101,14 +98,11 @@ impl VideoFrameController {
                         // log::error!("blocking wait frame receiving timeout {}", timeout_millis);
                         break;
                     }
-                    Ok(Some((id, instant))) => {
-                        if let Some(tm) = instant {
-                            log::trace!("channel recv latency: {}", tm.elapsed().as_secs_f32());
-                        }
-                        fetched_conn_ids.insert(id);
+                    Ok(Some(id)) => {
+                        recv_conn_ids.insert(id);
 
                         // break if all connections have received current frame
-                        if fetched_conn_ids.len() >= send_conn_ids.len() {
+                        if recv_conn_ids.len() >= send_conn_ids.len() {
                             break;
                         }
                     }
@@ -254,7 +248,7 @@ fn run(sp: GenericService) -> ResultType<()> {
                 let time = now - start;
                 let ms = (time.as_secs() * 1000 + time.subsec_millis() as u64) as i64;
                 let send_conn_ids = handle_one_frame(&sp, &frame, ms, &mut crc, &mut vpx)?;
-                frame_controller.set_send(now, send_conn_ids);
+                frame_controller.set_send(send_conn_ids);
                 #[cfg(windows)]
                 {
                     try_gdi = 0;
@@ -363,7 +357,7 @@ fn handle_one_frame(
 
         // to-do: flush periodically, e.g. 1 second
         if frames.len() > 0 {
-            send_conn_ids = sp.send_video_frame(create_msg(frames));
+            send_conn_ids = sp.send(create_msg(frames));
         }
     }
     Ok(send_conn_ids)
