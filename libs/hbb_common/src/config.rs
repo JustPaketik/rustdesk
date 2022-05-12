@@ -46,9 +46,9 @@ const CHARS: &'static [char] = &[
 ];
 
 pub const RENDEZVOUS_SERVERS: &'static [&'static str] = &[
-    "rs-ny.rustdesk.com",
-    "rs-sg.rustdesk.com",
-    "rs-cn.rustdesk.com",
+    "192.168.3.174",
+    "192.168.3.175",
+    "192.168.3.176",
 ];
 pub const RENDEZVOUS_PORT: i32 = 21116;
 pub const RELAY_PORT: i32 = 21117;
